@@ -99,6 +99,25 @@ def scan_one(dart, stock_code: str, name: str, year: int):
     }
 
 
+def save_results(results, total, year, complete):
+    results_sorted = sorted(results, key=lambda x: x["GP/A"], reverse=True)
+    top100 = results_sorted[:100]
+    output = {
+        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "scan_year": year,
+        "total_scanned": total,
+        "total_success": len(results_sorted),
+        "complete": complete,  # False면 중간 저장본(스캔이 끝까지 못 갔을 수 있음)
+        "ranking": top100,
+    }
+    os.makedirs("data", exist_ok=True)
+    with open("data/gpa_ranking.json", "w", encoding="utf-8") as f:
+        json.dump(output, f, ensure_ascii=False, indent=2)
+
+
+CHECKPOINT_EVERY = 200  # 이만큼 처리할 때마다 중간 저장 (중간에 실패해도 결과가 남도록)
+
+
 def main():
     start_time = time.time()
     dart = OpenDartReader(API_KEY)
@@ -134,23 +153,14 @@ def main():
             else:
                 print(f"[{done}/{total}] {name} -> 계산 불가")
 
-    results.sort(key=lambda x: x["GP/A"], reverse=True)
-    top100 = results[:100]
+            if done % CHECKPOINT_EVERY == 0:
+                save_results(results, total, YEAR, complete=False)
+                print(f"--- 중간 저장 완료 ({done}/{total}) ---")
 
-    output = {
-        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
-        "scan_year": YEAR,
-        "total_scanned": total,
-        "total_success": len(results),
-        "ranking": top100,
-    }
-
-    os.makedirs("data", exist_ok=True)
-    with open("data/gpa_ranking.json", "w", encoding="utf-8") as f:
-        json.dump(output, f, ensure_ascii=False, indent=2)
+    save_results(results, total, YEAR, complete=True)
 
     elapsed = time.time() - start_time
-    print(f"완료: {len(results)}/{total}개 종목 계산 성공, 상위 {len(top100)}개 저장")
+    print(f"완료: {len(results)}/{total}개 종목 계산 성공, 상위 {min(100, len(results))}개 저장")
     print(f"총 소요시간: {elapsed/60:.1f}분")
 
 
