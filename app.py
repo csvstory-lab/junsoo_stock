@@ -187,10 +187,12 @@ def fetch_gpa(names: tuple, year: int):
     for name in names:
         df = None
         used_fs_div = None
+        last_error = None
         for fs_div in ("CFS", "OFS"):  # 연결재무제표 먼저 시도, 없으면 별도재무제표
             try:
                 candidate = dart.finstate_all(name, year, fs_div=fs_div)
-            except Exception:
+            except Exception as e:
+                last_error = str(e)
                 candidate = None
             if candidate is not None and len(candidate) > 0:
                 df = candidate
@@ -198,7 +200,8 @@ def fetch_gpa(names: tuple, year: int):
                 break
 
         if df is None or len(df) == 0:
-            rows.append({"종목": name, "GP/A": None, "비고": "해당 연도 재무제표 데이터 없음"})
+            note = f"조회 실패: {last_error}" if last_error else "해당 연도 재무제표 데이터 없음"
+            rows.append({"종목": name, "GP/A": None, "비고": note})
             continue
 
         try:
