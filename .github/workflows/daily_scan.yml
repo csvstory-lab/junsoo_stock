@@ -1,0 +1,42 @@
+name: 매일 GP/A 전체 스캔
+
+on:
+  schedule:
+    - cron: '0 21 * * 0-4'  # UTC 21:00 = 한국시간 평일 오전 6시
+  workflow_dispatch:
+    inputs:
+      max_stocks:
+        description: '테스트용 최대 종목 수 (0을 넣으면 전체 스캔)'
+        required: false
+        default: '30'
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: 저장소 코드 가져오기
+        uses: actions/checkout@v4
+
+      - name: 파이썬 설정
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 필요한 패키지 설치
+        run: pip install -r scanner/requirements.txt
+
+      - name: 전체 종목 스캔 실행
+        env:
+          DART_API_KEY: ${{ secrets.DART_API_KEY }}
+          MAX_STOCKS: ${{ github.event.inputs.max_stocks || '0' }}
+        run: python scanner/scan_gpa.py
+
+      - name: 결과를 저장소에 커밋
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/gpa_ranking.json
+          git diff --staged --quiet || git commit -m "GP/A 랭킹 자동 업데이트 $(date -u +'%Y-%m-%d')"
+          git push
