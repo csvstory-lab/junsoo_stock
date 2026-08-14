@@ -70,19 +70,24 @@ with st.sidebar:
 col1, col2 = st.columns(2)
 
 with col1:
-    st.subheader("🏛 오늘의 가치투자 후보 (GP/A 상위 랭킹)")
+    st.subheader("🏛 오늘의 가치투자 후보 (GP/A + PBR)")
     try:
         with open("data/gpa_ranking.json", "r", encoding="utf-8") as f:
             gpa_data = json.load(f)
+        filter_note = gpa_data.get("filter_note", "")
         st.caption(
             f"업데이트: {gpa_data['updated_at']} · {gpa_data['scan_year']}년 재무제표 기준 · "
             f"{gpa_data['total_success']}/{gpa_data['total_scanned']}개 종목 계산 성공"
+            + (f" · 선정 기준: {filter_note}" if filter_note else "")
         )
         if not gpa_data.get("complete", True):
             st.warning("이 결과는 스캔이 끝까지 완료되지 않은 중간 저장본입니다. 다음 자동 실행 때 갱신됩니다.")
         rank_df = pd.DataFrame(gpa_data["ranking"])
         st.dataframe(rank_df, use_container_width=True, hide_index=True, height=400)
-        st.caption("GP/A는 참고용 수치이며 투자 조언이 아닙니다. F-Score·PBR 필터는 다음 단계에서 추가 예정입니다.")
+        st.caption(
+            "GP/A 상위권(수익성 좋은 기업) 중에서 PBR이 낮은(싸게 거래되는) 순으로 뽑은 결과입니다. "
+            "참고용 수치이며 투자 조언이 아닙니다. F-Score 필터는 다음 단계에서 추가 예정입니다."
+        )
     except FileNotFoundError:
         st.info(
             "아직 자동 스캔 결과가 없습니다. GitHub Actions에서 'daily_scan' 워크플로를 "
