@@ -578,4 +578,118 @@ else:
         st.info("아직 등록된 보유 종목이 없습니다. 위에서 추가해보세요.")
 
 st.divider()
-st.caption("Build v0.6 — 로그인 + 매크로 시장 날씨 + 매일 자동 GP/A·PBR 스캔 + 공시 모듈 + 개별 조회 + 보유 종목 리스크 관리")
+
+# ---------------------------------------------------------
+# 뉴스 감성 분석 모듈 — v0.7에서 새로 추가
+# 네이버 뉴스(NAVER API HUB) + Groq(무료 LLM)로 호재/악재를 -1.0~+1.0로 판단합니다.
+# ---------------------------------------------------------
+import re
+
+st.header("📰 뉴스 감성 분석")
+st.caption("네이버 뉴스에서 최근 기사를 가져와 AI(Groq)로 호재/악재를 판단합니다 (-1.0 ~ +1.0)")
+
+NAVER_NEWS_URL = "https://naverapihub.apigw.ntruss.com/search/v1/news"
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+
+
+def naver_headers():
+    return {
+        "X-NCP-APIGW-API-KEY-ID": st.secrets["NAVER_CLIENT_ID"],
+        "X-NCP-APIGW-API-KEY": st.secrets["NAVER_CLIENT_SECRET"],
+    }
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def fetch_news(query: str, display: int = 5):
+    try:
+        params = {"query": query, "display": display, "sort": "date"}
+        r = requests.get(NAVER_NEWS_URL, headers=naver_headers(), params=params, timeout=10)
+        if r.status_code != 200:
+            return []
+        items = r.json().get("items", [])
+        cleaned = []
+        for it in items:
+            title = re.sub(r"</?b>", "", it.get("title", ""))
+            desc = re.sub(r"</?b>", "", it.get("description", ""))
+            cleaned.append({"title": title, "description": desc, "pubDate": it.get("pubDate", "")})
+        return cleaned
+    except Exception:
+        return []
+
+
+def score_news_with_groq(stock_name: str, headlines: list):
+    if not headlines:
+        return None
+    joined = "\n".join(f"- {h['title']}" for h in headlines)
+    prompt = (
+        f"다음은 '{stock_name}' 관련 최근 뉴스 제목들이다.\n\n{joined}\n\n"
+        f"이 뉴스들이 종합적으로 '{stock_name}' 주가에 미칠 영향을 "
+        f"-1.0(매우 부정적)부터 +1.0(매우 긍정적) 사이의 숫자 하나로 평가해라. "
+        f"단순 일상 뉴스면 0에 가깝게 평가해라.\n\n"
+        f"반드시 아래 형식으로만 답하고 다른 말은 하지 마라:\n"
+        f"점수: [숫자]\n이유: [한 문장]"
+    )
+    try:
+        headers = {"Authorization": f"Bearer {st.secrets['GROQ_API_KEY']}", "Content-Type": "application/json"}
+        payload = {
+            "model": "llama-3.3-70b-versatile",
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.2,
+        }
+        r = requests.post(GROQ_URL, headers=headers, json=payload, timeout=20)
+        if r.status_code == 200:
+            return r.json()["choices"][0]["message"]["content"]
+        return f"조회 실패 (상태코드 {r.status_code})"
+    except Exception as e:
+        return f"오류: {e}"
+
+
+def parse_score(text: str):
+    if not text:
+        return None, None
+    m = re.search(r"점수\s*[:：]\s*([+-]?\d*\.?\d+)", text)
+    score = float(m.group(1)) if m else None
+    m2 = re.search(r"이유\s*[:：]\s*(.+)", text)
+    reason = m2.group(1).strip() if m2 else text.strip()
+    return score, reason
+
+
+required_secrets = ["NAVER_CLIENT_ID", "NAVER_CLIENT_SECRET", "GROQ_API_KEY"]
+missing = [s for s in required_secrets if s not in st.secrets]
+
+if missing:
+    st.info(f"뉴스 감성 분석을 쓰려면 Secrets에 {', '.join(missing)} 등록이 필요합니다.")
+else:
+    news_watchlist = st.text_input(
+        "뉴스 분석할 종목 (쉼표로 구분)", value="삼성전자, 카카오", key="news_watchlist"
+    )
+
+    if st.button("뉴스 감성 분석 실행"):
+        names = [n.strip() for n in news_watchlist.split(",") if n.strip()]
+        rows = []
+        for name in names:
+            with st.spinner(f"{name} 뉴스 분석 중..."):
+                news_items = fetch_news(name, display=5)
+                if not news_items:
+                    rows.append({"종목": name, "점수": None, "이유": "관련 뉴스를 찾지 못했습니다", "최근 기사": "-"})
+                    continue
+                llm_result = score_news_with_groq(name, news_items)
+                score, reason = parse_score(llm_result)
+                rows.append(
+                    {"종목": name, "점수": score, "이유": reason, "최근 기사": news_items[0]["title"]}
+                )
+
+        news_df = pd.DataFrame(rows)
+        st.dataframe(news_df, use_container_width=True, hide_index=True)
+
+        for r in rows:
+            if r["점수"] is not None and r["점수"] <= -0.7:
+                st.error(f"🚨 {r['종목']}: 강한 악재 감지 (점수 {r['점수']}) — {r['이유']}")
+
+        st.caption(
+            "AI가 뉴스 제목만 보고 판단한 참고용 점수이며, 오탐(잘못 판단)이 있을 수 있습니다. "
+            "투자 조언이 아니며, 중요한 판단 전엔 반드시 원문 기사를 직접 확인하세요."
+        )
+
+st.divider()
+st.caption("Build v0.7 — 로그인 + 매크로 날씨 + 매일 자동 GP/A·PBR 스캔 + 공시 모듈 + 개별 조회 + 리스크 관리 + 뉴스 감성 분석")
