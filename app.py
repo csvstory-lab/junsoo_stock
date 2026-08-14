@@ -1,6 +1,8 @@
 import streamlit as st
 import json
+import base64
 import pandas as pd
+import requests
 
 st.set_page_config(
     page_title="나의 주식 정보 대시보드",
@@ -312,3 +314,131 @@ if st.button("GP/A 계산하기"):
 
 st.divider()
 st.caption("Build v0.4 — 로그인 + 매일 자동 GP/A 전체 스캔 + 공시 모듈 + 개별 종목 수동 조회")
+
+# ---------------------------------------------------------
+# 리스크 관리 (MDD Guard) 모듈 — v0.5에서 새로 추가
+# 보유 종목을 GitHub 저장소(data/holdings.json)에 저장해서 재접속해도 유지되게 합니다.
+# ---------------------------------------------------------
+import FinanceDataReader as fdr
+
+st.divider()
+st.header("🚨 내 보유 종목 리스크 관리")
+st.caption("매수 단가 대비 낙폭이 기준을 넘으면 경고를 표시합니다 (단기 -3% / 장기 -15%)")
+
+GITHUB_REPO = st.secrets.get("GITHUB_REPO", "")
+HOLDINGS_PATH = "data/holdings.json"
+
+
+def github_headers():
+    return {
+        "Authorization": f"token {st.secrets['GH_PAT']}",
+        "Accept": "application/vnd.github+json",
+    }
+
+
+def load_holdings():
+    url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/{HOLDINGS_PATH}"
+    try:
+        r = requests.get(url, timeout=10)
+        if r.status_code == 200:
+            return r.json()
+    except Exception:
+        pass
+    return []
+
+
+def save_holdings(holdings):
+    api_url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{HOLDINGS_PATH}"
+    sha = None
+    try:
+        r = requests.get(api_url, headers=github_headers(), timeout=10)
+        if r.status_code == 200:
+            sha = r.json().get("sha")
+    except Exception:
+        pass
+
+    content_str = json.dumps(holdings, ensure_ascii=False, indent=2)
+    content_b64 = base64.b64encode(content_str.encode("utf-8")).decode("utf-8")
+    payload = {"message": "보유 종목 업데이트", "content": content_b64, "branch": "main"}
+    if sha:
+        payload["sha"] = sha
+
+    try:
+        resp = requests.put(api_url, headers=github_headers(), json=payload, timeout=10)
+        return resp.status_code in (200, 201)
+    except Exception:
+        return False
+
+
+if "GH_PAT" not in st.secrets or not GITHUB_REPO:
+    st.info(
+        "보유 종목을 저장하려면 GH_PAT(GitHub 개인 액세스 토큰)와 GITHUB_REPO를 "
+        "Secrets에 등록해야 합니다. 등록 방법은 안내를 참고해주세요."
+    )
+else:
+    holdings = load_holdings()
+
+    with st.expander("➕ 보유 종목 추가"):
+        with st.form("add_holding"):
+            h_code = st.text_input("종목코드 (6자리)")
+            h_price = st.number_input("매수 단가(원)", min_value=0, step=100)
+            h_type = st.radio("매매 유형", ["장기", "단기"], horizontal=True)
+            submitted = st.form_submit_button("추가")
+            if submitted:
+                if h_code.strip() and h_price > 0:
+                    holdings.append(
+                        {"종목코드": h_code.strip().zfill(6), "매수단가": h_price, "유형": h_type}
+                    )
+                    if save_holdings(holdings):
+                        st.success("추가되었습니다.")
+                        st.rerun()
+                    else:
+                        st.error("저장에 실패했습니다. GH_PAT 권한 설정을 확인해주세요.")
+                else:
+                    st.warning("종목코드와 매수 단가를 입력해주세요.")
+
+    if holdings:
+        @st.cache_data(ttl=600, show_spinner=False)
+        def get_current_price(code: str):
+            try:
+                df = fdr.DataReader(code)
+                if df is not None and len(df) > 0:
+                    return float(df["Close"].iloc[-1])
+            except Exception:
+                pass
+            return None
+
+        rows = []
+        for h in holdings:
+            cur = get_current_price(h["종목코드"])
+            if cur is None:
+                rows.append({**h, "현재가": None, "수익률(%)": None, "상태": "가격 조회 실패"})
+                continue
+            change_pct = (cur - h["매수단가"]) / h["매수단가"] * 100
+            threshold = -3 if h["유형"] == "단기" else -15
+            if change_pct <= threshold:
+                status = "🔴 손절 검토"
+            elif change_pct <= threshold / 2:
+                status = "🟡 주의"
+            else:
+                status = "🟢 정상"
+            rows.append({**h, "현재가": cur, "수익률(%)": round(change_pct, 1), "상태": status})
+
+        holdings_df = pd.DataFrame(rows)
+        st.dataframe(holdings_df, use_container_width=True, hide_index=True)
+
+        del_options = [f"{h['종목코드']} (매수단가 {h['매수단가']:,}원)" for h in holdings]
+        to_delete = st.selectbox("삭제할 종목 선택", ["선택 안 함"] + del_options)
+        if st.button("선택한 종목 삭제") and to_delete != "선택 안 함":
+            idx = del_options.index(to_delete)
+            holdings.pop(idx)
+            if save_holdings(holdings):
+                st.success("삭제되었습니다.")
+                st.rerun()
+
+        st.caption("🔴 손절 검토 = 기준 낙폭 초과 · 🟡 주의 = 기준의 절반 이상 하락 · 이 표는 참고용이며 투자 조언이 아닙니다.")
+    else:
+        st.info("아직 등록된 보유 종목이 없습니다. 위에서 추가해보세요.")
+
+st.divider()
+st.caption("Build v0.5 — 로그인 + 매일 자동 GP/A·PBR 스캔 + 공시 모듈 + 개별 조회 + 보유 종목 리스크 관리")
