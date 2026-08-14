@@ -680,7 +680,7 @@ else:
                 )
 
         news_df = pd.DataFrame(rows)
-        st.dataframe(news_df, use_container_width=True, hide_index=True)
+        st.table(news_df.set_index("종목"))
 
         for r in rows:
             if r["점수"] is not None and r["점수"] <= -0.7:
