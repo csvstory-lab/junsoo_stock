@@ -93,6 +93,110 @@ def compute_financials(dart, corp_code: str, year: int):
     return None, None, None
 
 
+def get_account_set(dart, corp_code: str, year: int):
+    """F-Score 계산에 필요한 여러 재무 계정을 한 해 기준으로 한 번에 뽑는다."""
+    for fs_div in ("CFS", "OFS"):
+        try:
+            df = dart.finstate_all(corp_code, year, fs_div=fs_div)
+        except Exception:
+            df = None
+        if df is not None and len(df) > 0:
+            df = df.copy()
+            df["account_nm"] = df["account_nm"].astype(str).str.strip()
+
+            revenue = get_amount(df, "매출액") or get_amount(df, "수익(매출액)")
+            gross_profit = get_amount(df, "매출총이익")
+            cogs = get_amount(df, "매출원가")
+            if gross_profit is None and revenue is not None and cogs is not None:
+                gross_profit = revenue - cogs
+            cfo = get_amount(df, "영업활동으로인한현금흐름") or get_amount(df, "영업활동현금흐름")
+
+            return {
+                "total_assets": get_amount(df, "자산총계"),
+                "liabilities": get_amount(df, "부채총계"),
+                "current_assets": get_amount(df, "유동자산"),
+                "current_liabilities": get_amount(df, "유동부채"),
+                "capital_stock": get_amount(df, "자본금"),
+                "net_income": get_amount(df, "당기순이익"),
+                "cfo": cfo,
+                "revenue": revenue,
+                "gross_profit": gross_profit,
+            }
+    return None
+
+
+def _safe_div(a, b):
+    if a is None or b is None or b == 0:
+        return None
+    return a / b
+
+
+def compute_fscore(cur, prev):
+    """피오트로스키 F-Score. 9점 만점, 데이터가 없어 계산 불가능한 항목은 0점 처리하고
+    실제로 몇 개 항목을 채점했는지(checkable)도 함께 반환한다."""
+    if cur is None:
+        return 0, 0
+
+    score = 0
+    checkable = 0
+    prev = prev or {}
+
+    roa_cur = _safe_div(cur.get("net_income"), cur.get("total_assets"))
+    roa_prev = _safe_div(prev.get("net_income"), prev.get("total_assets"))
+
+    checks = []
+    # 1. ROA > 0
+    checks.append((roa_cur is not None, roa_cur is not None and roa_cur > 0))
+    # 2. CFO > 0
+    checks.append((cur.get("cfo") is not None, cur.get("cfo") is not None and cur["cfo"] > 0))
+    # 3. ΔROA > 0
+    checks.append((roa_cur is not None and roa_prev is not None, roa_cur is not None and roa_prev is not None and roa_cur > roa_prev))
+    # 4. CFO > 당기순이익 (이익의 질)
+    ok4 = cur.get("cfo") is not None and cur.get("net_income") is not None
+    checks.append((ok4, ok4 and cur["cfo"] > cur["net_income"]))
+    # 5. 부채비율(부채/자산총계) 감소
+    lev_cur = _safe_div(cur.get("liabilities"), cur.get("total_assets"))
+    lev_prev = _safe_div(prev.get("liabilities"), prev.get("total_assets"))
+    ok5 = lev_cur is not None and lev_prev is not None
+    checks.append((ok5, ok5 and lev_cur < lev_prev))
+    # 6. 유동비율(유동자산/유동부채) 증가
+    cr_cur = _safe_div(cur.get("current_assets"), cur.get("current_liabilities"))
+    cr_prev = _safe_div(prev.get("current_assets"), prev.get("current_liabilities"))
+    ok6 = cr_cur is not None and cr_prev is not None
+    checks.append((ok6, ok6 and cr_cur > cr_prev))
+    # 7. 신주 발행 없음 (자본금 증가 없음 = 희석 없음)
+    ok7 = cur.get("capital_stock") is not None and prev.get("capital_stock") is not None
+    checks.append((ok7, ok7 and cur["capital_stock"] <= prev["capital_stock"]))
+    # 8. 매출총이익률 증가
+    gpm_cur = _safe_div(cur.get("gross_profit"), cur.get("revenue"))
+    gpm_prev = _safe_div(prev.get("gross_profit"), prev.get("revenue"))
+    ok8 = gpm_cur is not None and gpm_prev is not None
+    checks.append((ok8, ok8 and gpm_cur > gpm_prev))
+    # 9. 자산회전율(매출액/자산총계) 증가
+    turn_cur = _safe_div(cur.get("revenue"), cur.get("total_assets"))
+    turn_prev = _safe_div(prev.get("revenue"), prev.get("total_assets"))
+    ok9 = turn_cur is not None and turn_prev is not None
+    checks.append((ok9, ok9 and turn_cur > turn_prev))
+
+    for is_checkable, passed in checks:
+        if is_checkable:
+            checkable += 1
+            if passed:
+                score += 1
+
+    return score, checkable
+
+
+def compute_fscore_for_stock(dart, stock_code: str, year: int):
+    matched = dart.corp_codes[dart.corp_codes["stock_code"] == stock_code]
+    if matched.empty:
+        return 0, 0
+    corp_code = matched.iloc[0]["corp_code"]
+    cur = get_account_set(dart, corp_code, year)
+    prev = get_account_set(dart, corp_code, year - 1)
+    return compute_fscore(cur, prev)
+
+
 def scan_one(dart, stock_code: str, name: str, year: int, marcap):
     corp_code, resolved_name = resolve_corp_code(dart.corp_codes, stock_code)
     if not corp_code:
@@ -149,6 +253,8 @@ def save_results(results, total, year, complete):
 
 
 CHECKPOINT_EVERY = 200  # 이만큼 처리할 때마다 중간 저장 (중간에 실패해도 결과가 남도록)
+F_SCORE_THRESHOLD = int(os.environ.get("F_SCORE_THRESHOLD", "7"))  # 9점 만점 중 몇 점 이상을 통과로 볼지
+F_SCORE_POOL_SIZE = int(os.environ.get("F_SCORE_POOL_SIZE", "100"))  # GP/A 상위 몇 개에 F-Score를 적용할지
 
 
 def main():
@@ -160,8 +266,9 @@ def main():
         universe = universe.head(MAX_STOCKS)
 
     total = len(universe)
-    print(f"스캔 대상: {total}개 종목 (기준연도 {YEAR}, 동시 처리 {WORKERS}개)")
+    print(f"[1단계] 스캔 대상: {total}개 종목 (기준연도 {YEAR}, 동시 처리 {WORKERS}개)")
 
+    # ---------------- 1단계: 전체 종목 GP/A + PBR 스캔 ----------------
     results = []
     done = 0
     with ThreadPoolExecutor(max_workers=WORKERS) as executor:
@@ -190,12 +297,58 @@ def main():
 
             if done % CHECKPOINT_EVERY == 0:
                 save_results(results, total, YEAR, complete=False)
-                print(f"--- 중간 저장 완료 ({done}/{total}) ---")
+                print(f"--- 1단계 중간 저장 완료 ({done}/{total}) ---")
 
-    save_results(results, total, YEAR, complete=True)
+    valid = [r for r in results if r["GP/A"] is not None]
+    print(f"[1단계 완료] {len(valid)}/{total}개 종목 GP/A 계산 성공 ({(time.time()-start_time)/60:.1f}분 경과)")
+
+    # ---------------- 2단계: GP/A 상위 종목에만 F-Score 계산 ----------------
+    valid.sort(key=lambda x: x["GP/A"], reverse=True)
+    top_pool = valid[:F_SCORE_POOL_SIZE]
+    print(f"[2단계] F-Score 계산 대상: {len(top_pool)}개 (GP/A 상위)")
+
+    with ThreadPoolExecutor(max_workers=WORKERS) as executor:
+        futures = {
+            executor.submit(compute_fscore_for_stock, dart, r["종목코드"], YEAR): r for r in top_pool
+        }
+        done2 = 0
+        for fut in as_completed(futures):
+            done2 += 1
+            r = futures[fut]
+            try:
+                fscore, checkable = fut.result()
+            except Exception as e:
+                fscore, checkable = 0, 0
+                print(f"[F-Score {done2}/{len(top_pool)}] {r['종목명']} -> 오류: {e}")
+            r["F-Score"] = fscore
+            r["F-Score 항목수"] = checkable
+            print(f"[F-Score {done2}/{len(top_pool)}] {r['종목명']} -> {fscore}/9점 (평가 가능 {checkable}개)")
+
+    # ---------------- 3단계: F-Score 통과 종목만 PBR 낮은 순으로 최종 정렬 ----------------
+    passed = [r for r in top_pool if r.get("F-Score", 0) >= F_SCORE_THRESHOLD]
+    with_pbr = [r for r in passed if r["PBR"] is not None]
+    without_pbr = [r for r in passed if r["PBR"] is None]
+    with_pbr.sort(key=lambda x: x["PBR"])
+    final_ranking = with_pbr + without_pbr
+
+    output = {
+        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "scan_year": YEAR,
+        "total_scanned": total,
+        "total_success": len(valid),
+        "fscore_pool_size": len(top_pool),
+        "fscore_threshold": F_SCORE_THRESHOLD,
+        "fscore_passed": len(passed),
+        "complete": True,
+        "filter_note": f"GP/A 상위 {len(top_pool)}개 → F-Score {F_SCORE_THRESHOLD}점 이상 → PBR 낮은 순",
+        "ranking": final_ranking,
+    }
+    os.makedirs("data", exist_ok=True)
+    with open("data/gpa_ranking.json", "w", encoding="utf-8") as f:
+        json.dump(output, f, ensure_ascii=False, indent=2)
 
     elapsed = time.time() - start_time
-    print(f"완료: {len([r for r in results if r['GP/A'] is not None])}/{total}개 종목 계산 성공")
+    print(f"완료: GP/A 성공 {len(valid)}개 → F-Score {F_SCORE_THRESHOLD}점 이상 통과 {len(passed)}개")
     print(f"총 소요시간: {elapsed/60:.1f}분")
 
 
