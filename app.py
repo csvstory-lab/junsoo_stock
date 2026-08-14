@@ -380,6 +380,10 @@ if "GH_PAT" not in st.secrets or not GITHUB_REPO:
 else:
     holdings = load_holdings()
 
+    @st.cache_resource
+    def get_krx_listing():
+        return fdr.StockListing("KRX")
+
     with st.expander("➕ 보유 종목 추가"):
         with st.form("add_holding"):
             h_code = st.text_input("종목코드 (6자리)")
@@ -392,9 +396,10 @@ else:
                     code_clean = h_code.strip().zfill(6)
                     resolved_name = code_clean
                     try:
-                        _, name_found = resolve_corp_code(get_dart_client(), code_clean)
-                        if name_found:
-                            resolved_name = name_found
+                        listing = get_krx_listing()
+                        matched = listing[listing["Code"].astype(str).str.zfill(6) == code_clean]
+                        if len(matched) > 0:
+                            resolved_name = matched.iloc[0]["Name"]
                     except Exception:
                         pass
                     holdings.append(
