@@ -381,16 +381,31 @@ else:
     with st.expander("➕ 보유 종목 추가"):
         with st.form("add_holding"):
             h_code = st.text_input("종목코드 (6자리)")
+            h_qty = st.number_input("매수 수량(주)", min_value=0, step=1, value=0)
             h_price = st.number_input("매수 단가(원)", min_value=0, step=100)
             h_type = st.radio("매매 유형", ["장기", "단기"], horizontal=True)
             submitted = st.form_submit_button("추가")
             if submitted:
                 if h_code.strip() and h_price > 0:
+                    code_clean = h_code.strip().zfill(6)
+                    resolved_name = code_clean
+                    try:
+                        _, name_found = resolve_corp_code(get_dart_client(), code_clean)
+                        if name_found:
+                            resolved_name = name_found
+                    except Exception:
+                        pass
                     holdings.append(
-                        {"종목코드": h_code.strip().zfill(6), "매수단가": h_price, "유형": h_type}
+                        {
+                            "종목코드": code_clean,
+                            "종목명": resolved_name,
+                            "매수수량": int(h_qty),
+                            "매수단가": h_price,
+                            "유형": h_type,
+                        }
                     )
                     if save_holdings(holdings):
-                        st.success("추가되었습니다.")
+                        st.success(f"{resolved_name} 추가되었습니다.")
                         st.rerun()
                     else:
                         st.error("저장에 실패했습니다. GH_PAT 권한 설정을 확인해주세요.")
@@ -398,23 +413,37 @@ else:
                     st.warning("종목코드와 매수 단가를 입력해주세요.")
 
     if holdings:
-        @st.cache_data(ttl=600, show_spinner=False)
+        @st.cache_data(ttl=300, show_spinner=False)
         def get_current_price(code: str):
+            """반환값: (현재가, 그 가격의 기준일자) — 며칠자 가격인지 화면에 그대로 보여줘서
+            캐시나 데이터 지연으로 인한 혼동을 막습니다."""
             try:
-                df = fdr.DataReader(code)
+                recent_start = (datetime.today() - timedelta(days=10)).strftime("%Y-%m-%d")
+                df = fdr.DataReader(code, recent_start)
                 if df is not None and len(df) > 0:
-                    return float(df["Close"].iloc[-1])
+                    price = float(df["Close"].iloc[-1])
+                    price_date = str(df.index[-1].date())
+                    return price, price_date
             except Exception:
                 pass
-            return None
+            return None, None
+
+        if st.button("🔄 현재가 새로고침"):
+            get_current_price.clear()
 
         rows = []
         for h in holdings:
-            cur = get_current_price(h["종목코드"])
+            cur, price_date = get_current_price(h["종목코드"])
+            qty = h.get("매수수량", 0)
+            display_name = h.get("종목명", h["종목코드"])
             if cur is None:
-                rows.append({**h, "현재가": None, "수익률(%)": None, "상태": "가격 조회 실패"})
+                rows.append(
+                    {"종목명": display_name, "종목코드": h["종목코드"], "현재가": None, "기준일": None,
+                     "수익률(%)": None, "평가손익(원)": None, "상태": "가격 조회 실패"}
+                )
                 continue
             change_pct = (cur - h["매수단가"]) / h["매수단가"] * 100
+            profit = (cur - h["매수단가"]) * qty if qty else None
             threshold = -3 if h["유형"] == "단기" else -15
             if change_pct <= threshold:
                 status = "🔴 손절 검토"
@@ -422,12 +451,26 @@ else:
                 status = "🟡 주의"
             else:
                 status = "🟢 정상"
-            rows.append({**h, "현재가": cur, "수익률(%)": round(change_pct, 1), "상태": status})
+            rows.append(
+                {
+                    "종목명": display_name,
+                    "종목코드": h["종목코드"],
+                    "매수수량": qty,
+                    "매수단가": h["매수단가"],
+                    "현재가": cur,
+                    "기준일": price_date,
+                    "수익률(%)": round(change_pct, 1),
+                    "평가손익(원)": round(profit) if profit is not None else None,
+                    "상태": status,
+                }
+            )
 
         holdings_df = pd.DataFrame(rows)
         st.dataframe(holdings_df, use_container_width=True, hide_index=True)
 
-        del_options = [f"{h['종목코드']} (매수단가 {h['매수단가']:,}원)" for h in holdings]
+        del_options = [
+            f"{h.get('종목명', h['종목코드'])} ({h['종목코드']}, 매수단가 {h['매수단가']:,}원)" for h in holdings
+        ]
         to_delete = st.selectbox("삭제할 종목 선택", ["선택 안 함"] + del_options)
         if st.button("선택한 종목 삭제") and to_delete != "선택 안 함":
             idx = del_options.index(to_delete)
@@ -436,7 +479,11 @@ else:
                 st.success("삭제되었습니다.")
                 st.rerun()
 
-        st.caption("🔴 손절 검토 = 기준 낙폭 초과 · 🟡 주의 = 기준의 절반 이상 하락 · 이 표는 참고용이며 투자 조언이 아닙니다.")
+        st.caption(
+            "🔴 손절 검토 = 기준 낙폭 초과 · 🟡 주의 = 기준의 절반 이상 하락 · "
+            "'기준일'이 오늘 날짜가 아니면 아직 최신 시세가 반영되기 전일 수 있습니다. "
+            "이 표는 참고용이며 투자 조언이 아닙니다."
+        )
     else:
         st.info("아직 등록된 보유 종목이 없습니다. 위에서 추가해보세요.")
 
