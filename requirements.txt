@@ -1,3 +1,5 @@
 streamlit
 OpenDartReader
 pandas
+finance-datareader
+requests
