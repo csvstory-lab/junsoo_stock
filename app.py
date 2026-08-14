@@ -87,12 +87,12 @@ st.divider()
 # 국내 공시(DART) 모듈 — v0.2에서 새로 추가된 실제 동작 기능
 # ---------------------------------------------------------
 import pandas as pd
-   from datetime import datetime, timedelta
+from datetime import datetime, timedelta
 
-   try:
-       from opendartreader import OpenDartReader
-   except ImportError:
-       import OpenDartReader
+try:
+    from opendartreader import OpenDartReader  # 최신 버전 (패키지명이 소문자로 변경됨)
+except ImportError:
+    import OpenDartReader  # 예전 버전 호환용
 
 st.header("🏛 관심종목 최근 공시")
 st.caption("DART 전자공시시스템에서 최근 14일간 공시를 가져와 유형별로 1차 점수를 매깁니다")
