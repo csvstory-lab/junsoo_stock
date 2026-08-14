@@ -339,11 +339,15 @@ def github_headers():
 
 
 def load_holdings():
-    url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/{HOLDINGS_PATH}"
+    """raw.githubusercontent.com은 몇 분간 캐시가 걸려 방금 저장한 내용이 바로 안 보일 수 있어서,
+    캐시가 덜 걸리는 GitHub API(api.github.com)로 직접 읽어옵니다."""
+    api_url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{HOLDINGS_PATH}"
     try:
-        r = requests.get(url, timeout=10)
+        r = requests.get(api_url, headers=github_headers(), timeout=10)
         if r.status_code == 200:
-            return r.json()
+            content_b64 = r.json()["content"]
+            content_str = base64.b64decode(content_b64).decode("utf-8")
+            return json.loads(content_str)
     except Exception:
         pass
     return []
@@ -378,7 +382,11 @@ if "GH_PAT" not in st.secrets or not GITHUB_REPO:
         "Secrets에 등록해야 합니다. 등록 방법은 안내를 참고해주세요."
     )
 else:
-    holdings = load_holdings()
+    # 세션 안에서는 GitHub을 다시 읽지 않고 이미 가진 목록을 그대로 씁니다.
+    # (저장 직후 바로 다시 읽으면 캐시 때문에 방금 추가한 게 안 보일 수 있어서)
+    if "holdings" not in st.session_state:
+        st.session_state["holdings"] = load_holdings()
+    holdings = st.session_state["holdings"]
 
     @st.cache_resource
     def get_krx_listing():
