@@ -13,6 +13,7 @@ on:
 jobs:
   scan:
     runs-on: ubuntu-latest
+    timeout-minutes: 330  # 5시간 30분 안전장치 (GitHub 기본 최대 6시간)
     permissions:
       contents: write
     steps:
@@ -34,6 +35,7 @@ jobs:
         run: python scanner/scan_gpa.py
 
       - name: 결과를 저장소에 커밋
+        if: always()  # 스캔 단계가 중간에 실패해도, 그때까지의 체크포인트 결과는 커밋 시도
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
