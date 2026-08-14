@@ -103,6 +103,28 @@ def get_dart_client():
     return OpenDartReader(st.secrets["DART_API_KEY"])
 
 
+def resolve_corp_code(dart, corp: str):
+    """6자리 종목코드 또는 회사명(정확/부분 일치)으로 DART 고유번호를 찾는다.
+    반환값: (corp_code, 매칭된 정식 회사명) 또는 못 찾으면 (None, None)"""
+    corp = str(corp).strip()
+    codes = dart.corp_codes
+
+    if corp.isdigit() and len(corp) == 6:
+        matched = codes[codes["stock_code"] == corp]
+    else:
+        matched = codes[codes["corp_name"] == corp]  # 1) 정확히 일치
+        if matched.empty:
+            matched = codes[codes["corp_name"].str.contains(corp, na=False, regex=False)]  # 2) 부분 일치
+            listed = matched[matched["stock_code"].notna() & (matched["stock_code"] != "")]
+            if len(listed) > 0:
+                matched = listed  # 상장기업 우선
+
+    if matched.empty:
+        return None, None
+    row = matched.iloc[0]
+    return row["corp_code"], row["corp_name"]
+
+
 # 공시 유형별 사전 가중치 (지난 가이드 3-1 표와 동일한 개념)
 WEIGHT_TABLE = {
     "자기주식취득": 0.6,
@@ -130,10 +152,14 @@ def fetch_disclosures(names: tuple, start_date: str):
     dart = get_dart_client()
     rows = []
     for name in names:
+        corp_code, resolved_name = resolve_corp_code(dart, name)
+        if not corp_code:
+            rows.append({"종목": name, "공시일": "-", "제목": "종목을 찾을 수 없음 (이름 또는 종목코드 확인)", "감지 키워드": "-", "영향력 점수": None})
+            continue
         try:
-            df = dart.list(name, start=start_date)
+            df = dart.list(corp_code, start=start_date)
         except Exception as e:
-            rows.append({"종목": name, "공시일": "-", "제목": f"조회 실패: {e}", "감지 키워드": "-", "영향력 점수": None})
+            rows.append({"종목": resolved_name, "공시일": "-", "제목": f"조회 실패: {e}", "감지 키워드": "-", "영향력 점수": None})
             continue
         if df is None or len(df) == 0:
             continue
@@ -141,7 +167,7 @@ def fetch_disclosures(names: tuple, start_date: str):
             weight, keyword = score_report(r["report_nm"])
             rows.append(
                 {
-                    "종목": name,
+                    "종목": resolved_name,
                     "공시일": r["rcept_dt"],
                     "제목": r["report_nm"],
                     "감지 키워드": keyword or "-",
@@ -185,12 +211,17 @@ def fetch_gpa(names: tuple, year: int):
     dart = get_dart_client()
     rows = []
     for name in names:
+        corp_code, resolved_name = resolve_corp_code(dart, name)
+        if not corp_code:
+            rows.append({"종목": name, "GP/A": None, "비고": "종목을 찾을 수 없음 (이름 또는 종목코드 확인)"})
+            continue
+
         df = None
         used_fs_div = None
         last_error = None
         for fs_div in ("CFS", "OFS"):  # 연결재무제표 먼저 시도, 없으면 별도재무제표
             try:
-                candidate = dart.finstate_all(name, year, fs_div=fs_div)
+                candidate = dart.finstate_all(corp_code, year, fs_div=fs_div)
             except Exception as e:
                 last_error = str(e)
                 candidate = None
@@ -201,7 +232,7 @@ def fetch_gpa(names: tuple, year: int):
 
         if df is None or len(df) == 0:
             note = f"조회 실패: {last_error}" if last_error else "해당 연도 재무제표 데이터 없음"
-            rows.append({"종목": name, "GP/A": None, "비고": note})
+            rows.append({"종목": resolved_name, "GP/A": None, "비고": note})
             continue
 
         try:
@@ -225,7 +256,7 @@ def fetch_gpa(names: tuple, year: int):
             gpa = (gross_profit / total_assets) if (gross_profit is not None and total_assets) else None
             rows.append(
                 {
-                    "종목": name,
+                    "종목": resolved_name,
                     "재무제표": "연결" if used_fs_div == "CFS" else "별도",
                     "매출총이익(억원)": round(gross_profit / 1e8, 1) if gross_profit is not None else None,
                     "총자산(억원)": round(total_assets / 1e8, 1) if total_assets else None,
@@ -234,7 +265,7 @@ def fetch_gpa(names: tuple, year: int):
                 }
             )
         except Exception as e:
-            rows.append({"종목": name, "GP/A": None, "비고": f"계산 오류: {e}"})
+            rows.append({"종목": resolved_name, "GP/A": None, "비고": f"계산 오류: {e}"})
     return rows
 
 
