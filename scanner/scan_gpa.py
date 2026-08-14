@@ -2,11 +2,15 @@
 전체 상장 종목 GP/A 자동 스캔 스크립트
 GitHub Actions가 매일 이 스크립트를 실행해서 data/gpa_ranking.json 을 만듭니다.
 Streamlit 앱(app.py)은 이 파일을 그냥 읽기만 하므로, 사이트 접속 시 대기시간이 없습니다.
+
+v2: 종목을 동시에(병렬로) 조회하도록 변경 — 순차 처리 시 2,500개에 약 10시간이 걸려
+GitHub Actions 제한(6시간)을 초과하는 문제를 해결하기 위함입니다.
 """
 import os
 import json
 import time
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pandas as pd
 import FinanceDataReader as fdr
@@ -19,6 +23,7 @@ except ImportError:
 API_KEY = os.environ["DART_API_KEY"]
 MAX_STOCKS = int(os.environ.get("MAX_STOCKS", "0"))  # 0이면 전체 스캔, 테스트할 땐 30 등으로 제한
 YEAR = int(os.environ.get("SCAN_YEAR", str(datetime.today().year - 1)))
+WORKERS = int(os.environ.get("SCAN_WORKERS", "5"))  # 동시에 처리할 종목 수
 
 
 def get_universe() -> pd.DataFrame:
@@ -79,7 +84,23 @@ def compute_gpa(dart, corp_code: str, year: int):
     return None, None
 
 
+def scan_one(dart, stock_code: str, name: str, year: int):
+    corp_code, resolved_name = resolve_corp_code(dart.corp_codes, stock_code)
+    if not corp_code:
+        return None
+    gpa, fs_type = compute_gpa(dart, corp_code, year)
+    if gpa is None:
+        return None
+    return {
+        "종목코드": stock_code,
+        "종목명": resolved_name or name,
+        "GP/A": round(gpa, 4),
+        "재무제표": fs_type,
+    }
+
+
 def main():
+    start_time = time.time()
     dart = OpenDartReader(API_KEY)
     universe = get_universe()
 
@@ -87,33 +108,31 @@ def main():
         universe = universe.head(MAX_STOCKS)
 
     total = len(universe)
-    print(f"스캔 대상: {total}개 종목 (기준연도 {YEAR})")
+    print(f"스캔 대상: {total}개 종목 (기준연도 {YEAR}, 동시 처리 {WORKERS}개)")
 
     results = []
-    for i, (_, row) in enumerate(universe.iterrows(), start=1):
-        stock_code = str(row["Code"]).zfill(6)
-        name = row.get("Name", stock_code)
+    done = 0
+    with ThreadPoolExecutor(max_workers=WORKERS) as executor:
+        futures = {}
+        for _, row in universe.iterrows():
+            stock_code = str(row["Code"]).zfill(6)
+            name = row.get("Name", stock_code)
+            fut = executor.submit(scan_one, dart, stock_code, name, YEAR)
+            futures[fut] = name
 
-        corp_code, resolved_name = resolve_corp_code(dart.corp_codes, stock_code)
-        if not corp_code:
-            print(f"[{i}/{total}] {name}({stock_code}) - DART 미등록, 건너뜀")
-            continue
-
-        gpa, fs_type = compute_gpa(dart, corp_code, YEAR)
-        if gpa is not None:
-            results.append(
-                {
-                    "종목코드": stock_code,
-                    "종목명": resolved_name or name,
-                    "GP/A": round(gpa, 4),
-                    "재무제표": fs_type,
-                }
-            )
-            print(f"[{i}/{total}] {name} -> GP/A={gpa:.4f}")
-        else:
-            print(f"[{i}/{total}] {name} -> 계산 불가")
-
-        time.sleep(0.2)  # DART 서버 부담을 줄이기 위한 안전장치
+        for fut in as_completed(futures):
+            done += 1
+            name = futures[fut]
+            try:
+                result = fut.result()
+            except Exception as e:
+                print(f"[{done}/{total}] {name} -> 오류: {e}")
+                continue
+            if result:
+                results.append(result)
+                print(f"[{done}/{total}] {result['종목명']} -> GP/A={result['GP/A']:.4f}")
+            else:
+                print(f"[{done}/{total}] {name} -> 계산 불가")
 
     results.sort(key=lambda x: x["GP/A"], reverse=True)
     top100 = results[:100]
@@ -130,7 +149,9 @@ def main():
     with open("data/gpa_ranking.json", "w", encoding="utf-8") as f:
         json.dump(output, f, ensure_ascii=False, indent=2)
 
+    elapsed = time.time() - start_time
     print(f"완료: {len(results)}/{total}개 종목 계산 성공, 상위 {len(top100)}개 저장")
+    print(f"총 소요시간: {elapsed/60:.1f}분")
 
 
 if __name__ == "__main__":
