@@ -3,6 +3,8 @@ import json
 import base64
 import pandas as pd
 import requests
+import FinanceDataReader as fdr
+from datetime import datetime, timedelta
 
 st.set_page_config(
     page_title="나의 주식 정보 대시보드",
@@ -69,6 +71,82 @@ with st.sidebar:
         st.session_state["password_correct"] = False
         st.rerun()
 
+# ---------------------------------------------------------
+# 매크로 시장 날씨 — v0.6에서 새로 추가 (원본 설계 3-① 매크로 가중치 매트릭스)
+# ---------------------------------------------------------
+st.subheader("🌤️ 오늘의 시장 날씨")
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_macro_snapshot():
+    result = {}
+    start = (datetime.today() - timedelta(days=10)).strftime("%Y-%m-%d")
+    for key, symbol in [("환율", "USD/KRW"), ("미국채10년물", "US10YT"), ("VIX", "VIX")]:
+        try:
+            df = fdr.DataReader(symbol, start)
+            if df is not None and len(df) >= 2:
+                latest = float(df["Close"].iloc[-1])
+                prev = float(df["Close"].iloc[-2])
+                result[key] = {
+                    "value": latest,
+                    "change_pct": (latest - prev) / prev * 100,
+                    "date": str(df.index[-1].date()),
+                }
+            elif df is not None and len(df) == 1:
+                result[key] = {"value": float(df["Close"].iloc[-1]), "change_pct": None, "date": str(df.index[-1].date())}
+            else:
+                result[key] = {"value": None, "change_pct": None, "date": None}
+        except Exception:
+            result[key] = {"value": None, "change_pct": None, "date": None}
+    return result
+
+
+macro = get_macro_snapshot()
+
+mcol1, mcol2, mcol3, mcol4 = st.columns(4)
+
+with mcol1:
+    d = macro.get("환율", {})
+    if d.get("value") is not None:
+        st.metric("💵 원/달러 환율", f"{d['value']:,.1f}원",
+                   f"{d['change_pct']:+.2f}%" if d.get("change_pct") is not None else None)
+    else:
+        st.metric("💵 원/달러 환율", "조회 실패")
+
+with mcol2:
+    d = macro.get("미국채10년물", {})
+    if d.get("value") is not None:
+        st.metric("🏦 美 국채 10년물", f"{d['value']:.2f}%",
+                   f"{d['change_pct']:+.2f}%" if d.get("change_pct") is not None else None)
+    else:
+        st.metric("🏦 美 국채 10년물", "조회 실패")
+
+with mcol3:
+    d = macro.get("VIX", {})
+    if d.get("value") is not None:
+        st.metric("😨 VIX 공포지수", f"{d['value']:.1f}",
+                   f"{d['change_pct']:+.2f}%" if d.get("change_pct") is not None else None)
+    else:
+        st.metric("😨 VIX 공포지수", "조회 실패")
+
+with mcol4:
+    vix_val = macro.get("VIX", {}).get("value")
+    if vix_val is not None:
+        if vix_val >= 30:
+            risk_label = "🔴 위험"
+        elif vix_val >= 20:
+            risk_label = "🟡 주의"
+        else:
+            risk_label = "🟢 안정"
+        st.metric("🚦 종합 시장 심리", risk_label)
+    else:
+        st.metric("🚦 종합 시장 심리", "N/A")
+
+if vix_val is not None and vix_val >= 30:
+    st.warning("VIX가 30을 넘었습니다 — 시장 변동성이 큰 구간입니다. 단기 매매 진입은 더 신중하게 판단하세요.")
+
+st.caption("환율·금리·VIX는 1시간마다 갱신됩니다 (Yahoo Finance 기준). 참고용 정보이며 투자 조언이 아닙니다.")
+
 col1, col2 = st.columns(2)
 
 with col1:
@@ -108,8 +186,6 @@ st.divider()
 # ---------------------------------------------------------
 # 국내 공시(DART) 모듈 — v0.2에서 새로 추가된 실제 동작 기능
 # ---------------------------------------------------------
-from datetime import datetime, timedelta
-
 try:
     from opendartreader import OpenDartReader  # 최신 버전 (패키지명이 소문자로 변경됨)
 except ImportError:
@@ -321,8 +397,6 @@ st.caption("Build v0.4 — 로그인 + 매일 자동 GP/A 전체 스캔 + 공시
 # 리스크 관리 (MDD Guard) 모듈 — v0.5에서 새로 추가
 # 보유 종목을 GitHub 저장소(data/holdings.json)에 저장해서 재접속해도 유지되게 합니다.
 # ---------------------------------------------------------
-import FinanceDataReader as fdr
-
 st.divider()
 st.header("🚨 내 보유 종목 리스크 관리")
 st.caption("매수 단가 대비 낙폭이 기준을 넘으면 경고를 표시합니다 (단기 -3% / 장기 -15%)")
@@ -504,4 +578,4 @@ else:
         st.info("아직 등록된 보유 종목이 없습니다. 위에서 추가해보세요.")
 
 st.divider()
-st.caption("Build v0.5 — 로그인 + 매일 자동 GP/A·PBR 스캔 + 공시 모듈 + 개별 조회 + 보유 종목 리스크 관리")
+st.caption("Build v0.6 — 로그인 + 매크로 시장 날씨 + 매일 자동 GP/A·PBR 스캔 + 공시 모듈 + 개별 조회 + 보유 종목 리스크 관리")
