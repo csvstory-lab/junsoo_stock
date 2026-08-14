@@ -78,6 +78,8 @@ with col1:
             f"업데이트: {gpa_data['updated_at']} · {gpa_data['scan_year']}년 재무제표 기준 · "
             f"{gpa_data['total_success']}/{gpa_data['total_scanned']}개 종목 계산 성공"
         )
+        if not gpa_data.get("complete", True):
+            st.warning("이 결과는 스캔이 끝까지 완료되지 않은 중간 저장본입니다. 다음 자동 실행 때 갱신됩니다.")
         rank_df = pd.DataFrame(gpa_data["ranking"])
         st.dataframe(rank_df, use_container_width=True, hide_index=True, height=400)
         st.caption("GP/A는 참고용 수치이며 투자 조언이 아닙니다. F-Score·PBR 필터는 다음 단계에서 추가 예정입니다.")
