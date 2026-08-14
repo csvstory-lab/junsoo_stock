@@ -128,7 +128,9 @@ def resolve_corp_code(dart, corp: str):
     """6자리 종목코드 또는 회사명(정확/부분 일치)으로 DART 고유번호를 찾는다.
     반환값: (corp_code, 매칭된 정식 회사명) 또는 못 찾으면 (None, None)"""
     corp = str(corp).strip()
-    codes = dart.corp_codes
+    codes = dart.corp_codes.copy()
+    codes["stock_code"] = codes["stock_code"].astype(str).str.strip()
+    codes["corp_name"] = codes["corp_name"].astype(str).str.strip()
 
     if corp.isdigit() and len(corp) == 6:
         matched = codes[codes["stock_code"] == corp]
@@ -481,6 +483,7 @@ else:
 
         st.caption(
             "🔴 손절 검토 = 기준 낙폭 초과 · 🟡 주의 = 기준의 절반 이상 하락 · "
+            "현재가는 KRX 정규장(09:00~15:30) 종가 기준이며, 넥스트레이드(NXT) 연장거래(~20:00) 가격과는 다를 수 있습니다. "
             "'기준일'이 오늘 날짜가 아니면 아직 최신 시세가 반영되기 전일 수 있습니다. "
             "이 표는 참고용이며 투자 조언이 아닙니다."
         )
