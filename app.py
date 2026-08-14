@@ -171,3 +171,78 @@ if st.button("공시 불러오기"):
 
 st.divider()
 st.caption("Build v0.2 — 로그인 화면 + DART 공시 모듈 (규칙 기반 1차 스코어링)")
+
+# ---------------------------------------------------------
+# 재무 필터 (GP/A) 모듈 — v0.3에서 새로 추가
+# ---------------------------------------------------------
+st.divider()
+st.header("💰 재무 필터 (GP/A)")
+st.caption("총자산 대비 매출총이익 비율 — 높을수록 자산 대비 수익창출력이 좋은 '알짜' 기업입니다")
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_gpa(names: tuple, year: int):
+    dart = get_dart_client()
+    rows = []
+    for name in names:
+        try:
+            df = dart.finstate(name, year)
+        except Exception as e:
+            rows.append({"종목": name, "GP/A": None, "비고": f"조회 실패: {e}"})
+            continue
+        if df is None or len(df) == 0:
+            rows.append({"종목": name, "GP/A": None, "비고": "해당 연도 데이터 없음"})
+            continue
+        try:
+            def get_amount(account_name):
+                matched = df[df["account_nm"] == account_name]["thstrm_amount"].values
+                if len(matched) == 0:
+                    return None
+                return float(str(matched[0]).replace(",", ""))
+
+            total_assets = get_amount("자산총계")
+            gross_profit = get_amount("매출총이익")
+            if gross_profit is None:
+                revenue = get_amount("매출액")
+                cogs = get_amount("매출원가")
+                gross_profit = (revenue - cogs) if (revenue is not None and cogs is not None) else None
+
+            gpa = (gross_profit / total_assets) if (gross_profit is not None and total_assets) else None
+            rows.append(
+                {
+                    "종목": name,
+                    "매출총이익(억원)": round(gross_profit / 1e8, 1) if gross_profit is not None else None,
+                    "총자산(억원)": round(total_assets / 1e8, 1) if total_assets else None,
+                    "GP/A": round(gpa, 3) if gpa is not None else None,
+                    "비고": "-" if gpa is not None else "일부 계정 항목 누락 (업종별 표기 차이)",
+                }
+            )
+        except Exception as e:
+            rows.append({"종목": name, "GP/A": None, "비고": f"계산 오류: {e}"})
+    return rows
+
+
+col_a, col_b = st.columns([3, 1])
+with col_a:
+    gpa_watchlist = st.text_input(
+        "GP/A 조회할 종목 (쉼표로 구분)", value="삼성전자, 카카오", key="gpa_watchlist"
+    )
+with col_b:
+    gpa_year = st.number_input("기준 연도", min_value=2015, max_value=2026, value=2025, step=1)
+
+if st.button("GP/A 계산하기"):
+    if "DART_API_KEY" not in st.secrets:
+        st.error("DART_API_KEY가 아직 Secrets에 등록되지 않았습니다.")
+    else:
+        gpa_tickers = tuple(t.strip() for t in gpa_watchlist.split(",") if t.strip())
+        with st.spinner("재무제표 조회 중..."):
+            gpa_rows = fetch_gpa(gpa_tickers, int(gpa_year))
+        gpa_df = pd.DataFrame(gpa_rows).sort_values("GP/A", ascending=False, na_position="last")
+        st.dataframe(gpa_df, use_container_width=True, hide_index=True)
+        st.caption(
+            "GP/A는 대략 0.3 이상이면 수익성이 우수한 편으로 봅니다. 참고용 수치이며 투자 조언이 아닙니다. "
+            "일부 종목은 업종별 계정과목 표기 차이로 '데이터 없음'이 나올 수 있어요."
+        )
+
+st.divider()
+st.caption("Build v0.3 — 로그인 + DART 공시 모듈 + GP/A 재무 필터")
