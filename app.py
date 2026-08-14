@@ -150,14 +150,18 @@ st.caption("환율·금리·VIX는 1시간마다 갱신됩니다 (Yahoo Finance 
 col1, col2 = st.columns(2)
 
 with col1:
-    st.subheader("🏛 오늘의 가치투자 후보 (GP/A + PBR)")
+    st.subheader("🏛 오늘의 가치투자 후보 (GP/A → F-Score → PBR)")
     try:
         with open("data/gpa_ranking.json", "r", encoding="utf-8") as f:
             gpa_data = json.load(f)
         filter_note = gpa_data.get("filter_note", "")
+        fscore_info = ""
+        if "fscore_passed" in gpa_data:
+            fscore_info = f" · F-Score {gpa_data.get('fscore_threshold', 7)}점 이상 통과: {gpa_data['fscore_passed']}개"
         st.caption(
             f"업데이트: {gpa_data['updated_at']} · {gpa_data['scan_year']}년 재무제표 기준 · "
             f"{gpa_data['total_success']}/{gpa_data['total_scanned']}개 종목 계산 성공"
+            + fscore_info
             + (f" · 선정 기준: {filter_note}" if filter_note else "")
         )
         if not gpa_data.get("complete", True):
@@ -165,8 +169,9 @@ with col1:
         rank_df = pd.DataFrame(gpa_data["ranking"])
         st.dataframe(rank_df, use_container_width=True, hide_index=True, height=400)
         st.caption(
-            "GP/A 상위권(수익성 좋은 기업) 중에서 PBR이 낮은(싸게 거래되는) 순으로 뽑은 결과입니다. "
-            "참고용 수치이며 투자 조언이 아닙니다. F-Score 필터는 다음 단계에서 추가 예정입니다."
+            "GP/A(수익성) 상위 종목 중 F-Score(재무 건전성, 9점 만점)가 기준 이상이면서 "
+            "PBR(밸류에이션)이 낮은 순으로 뽑은 결과입니다. 원본 설계의 3단계 필터가 모두 반영됐습니다. "
+            "참고용 수치이며 투자 조언이 아닙니다."
         )
     except FileNotFoundError:
         st.info(
