@@ -1,4 +1,6 @@
 import streamlit as st
+import json
+import pandas as pd
 
 st.set_page_config(
     page_title="나의 주식 정보 대시보드",
@@ -68,11 +70,22 @@ with st.sidebar:
 col1, col2 = st.columns(2)
 
 with col1:
-    st.subheader("🏛 오늘의 가치투자 후보 (자리표시)")
-    st.info(
-        "여기에 DART 공시 + GP/A·F-Score·PBR 재무필터 결과가 표시될 예정입니다.\n\n"
-        "다음 단계에서 DART OpenAPI 연동 모듈을 이 자리에 붙입니다."
-    )
+    st.subheader("🏛 오늘의 가치투자 후보 (GP/A 상위 랭킹)")
+    try:
+        with open("data/gpa_ranking.json", "r", encoding="utf-8") as f:
+            gpa_data = json.load(f)
+        st.caption(
+            f"업데이트: {gpa_data['updated_at']} · {gpa_data['scan_year']}년 재무제표 기준 · "
+            f"{gpa_data['total_success']}/{gpa_data['total_scanned']}개 종목 계산 성공"
+        )
+        rank_df = pd.DataFrame(gpa_data["ranking"])
+        st.dataframe(rank_df, use_container_width=True, hide_index=True, height=400)
+        st.caption("GP/A는 참고용 수치이며 투자 조언이 아닙니다. F-Score·PBR 필터는 다음 단계에서 추가 예정입니다.")
+    except FileNotFoundError:
+        st.info(
+            "아직 자동 스캔 결과가 없습니다. GitHub Actions에서 'daily_scan' 워크플로를 "
+            "한 번 수동 실행하면 이 자리에 순위표가 나타납니다."
+        )
 
 with col2:
     st.subheader("⚡ 오늘의 단기 후보 (자리표시)")
@@ -86,7 +99,6 @@ st.divider()
 # ---------------------------------------------------------
 # 국내 공시(DART) 모듈 — v0.2에서 새로 추가된 실제 동작 기능
 # ---------------------------------------------------------
-import pandas as pd
 from datetime import datetime, timedelta
 
 try:
@@ -202,8 +214,8 @@ st.caption("Build v0.2 — 로그인 화면 + DART 공시 모듈 (규칙 기반 
 # 재무 필터 (GP/A) 모듈 — v0.3에서 새로 추가
 # ---------------------------------------------------------
 st.divider()
-st.header("💰 재무 필터 (GP/A)")
-st.caption("총자산 대비 매출총이익 비율 — 높을수록 자산 대비 수익창출력이 좋은 '알짜' 기업입니다")
+st.header("💰 개별 종목 GP/A 직접 조회 (수동)")
+st.caption("특정 종목만 빠르게 확인하고 싶을 때 사용하세요. 위쪽 자동 랭킹과 별개로 그 자리에서 바로 계산합니다.")
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -292,4 +304,4 @@ if st.button("GP/A 계산하기"):
         )
 
 st.divider()
-st.caption("Build v0.3 — 로그인 + DART 공시 모듈 + GP/A 재무 필터")
+st.caption("Build v0.4 — 로그인 + 매일 자동 GP/A 전체 스캔 + 공시 모듈 + 개별 종목 수동 조회")
