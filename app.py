@@ -185,15 +185,25 @@ def fetch_gpa(names: tuple, year: int):
     dart = get_dart_client()
     rows = []
     for name in names:
-        try:
-            df = dart.finstate(name, year)
-        except Exception as e:
-            rows.append({"종목": name, "GP/A": None, "비고": f"조회 실패: {e}"})
-            continue
+        df = None
+        used_fs_div = None
+        for fs_div in ("CFS", "OFS"):  # 연결재무제표 먼저 시도, 없으면 별도재무제표
+            try:
+                candidate = dart.finstate_all(name, year, fs_div=fs_div)
+            except Exception:
+                candidate = None
+            if candidate is not None and len(candidate) > 0:
+                df = candidate
+                used_fs_div = fs_div
+                break
+
         if df is None or len(df) == 0:
-            rows.append({"종목": name, "GP/A": None, "비고": "해당 연도 데이터 없음"})
+            rows.append({"종목": name, "GP/A": None, "비고": "해당 연도 재무제표 데이터 없음"})
             continue
+
         try:
+            df["account_nm"] = df["account_nm"].astype(str).str.strip()
+
             def get_amount(account_name):
                 matched = df[df["account_nm"] == account_name]["thstrm_amount"].values
                 if len(matched) == 0:
@@ -204,6 +214,8 @@ def fetch_gpa(names: tuple, year: int):
             gross_profit = get_amount("매출총이익")
             if gross_profit is None:
                 revenue = get_amount("매출액")
+                if revenue is None:
+                    revenue = get_amount("수익(매출액)")
                 cogs = get_amount("매출원가")
                 gross_profit = (revenue - cogs) if (revenue is not None and cogs is not None) else None
 
@@ -211,10 +223,11 @@ def fetch_gpa(names: tuple, year: int):
             rows.append(
                 {
                     "종목": name,
+                    "재무제표": "연결" if used_fs_div == "CFS" else "별도",
                     "매출총이익(억원)": round(gross_profit / 1e8, 1) if gross_profit is not None else None,
                     "총자산(억원)": round(total_assets / 1e8, 1) if total_assets else None,
                     "GP/A": round(gpa, 3) if gpa is not None else None,
-                    "비고": "-" if gpa is not None else "일부 계정 항목 누락 (업종별 표기 차이)",
+                    "비고": "-" if gpa is not None else "매출총이익 계정 없음 (성격별 손익계산서 채택 기업일 수 있음)",
                 }
             )
         except Exception as e:
