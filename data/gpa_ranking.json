@@ -1,8 +1,8 @@
 {
-  "updated_at": "2026-10-28 00:31",
+  "updated_at": "2026-10-29 01:47",
   "scan_year": 2025,
-  "total_scanned": 2871,
-  "total_success": 2215,
+  "total_scanned": 2872,
+  "total_success": 2216,
   "fscore_pool_size": 100,
   "fscore_threshold": 7,
   "fscore_passed": 5,
